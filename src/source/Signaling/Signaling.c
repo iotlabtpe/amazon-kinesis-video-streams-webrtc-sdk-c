@@ -5,18 +5,19 @@ extern StateMachineState SIGNALING_STATE_MACHINE_STATES[];
 extern UINT32 SIGNALING_STATE_MACHINE_STATE_COUNT;
 
 STATUS signalingCreate(PSignalingClientInfoInternal pClientInfo, PChannelInfo pChannelInfo, PSignalingClientCallbacks pCallbacks,
-                           PAwsCredentialProvider pCredentialProvider, PSignalingClient* ppSignalingClient)
+                       PAwsCredentialProvider pCredentialProvider, PSignalingClient* ppSignalingClient)
 {
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
     PSignalingClient pSignalingClient = NULL;
     PCHAR userLogLevelStr = NULL;
     UINT32 userLogLevel;
-    struct lws_context_creation_info creationInfo;
+
     PStateMachineState pStateMachineState;
     BOOL cacheFound = FALSE;
     PSignalingFileCacheEntry pFileCacheEntry = NULL;
 
+    // error check.
     CHK(pClientInfo != NULL && pChannelInfo != NULL && pCallbacks != NULL && pCredentialProvider != NULL && ppSignalingClient != NULL,
         STATUS_NULL_ARG);
     CHK(pChannelInfo->version <= CHANNEL_INFO_CURRENT_VERSION, STATUS_SIGNALING_INVALID_CHANNEL_INFO_VERSION);
@@ -26,8 +27,6 @@ STATUS signalingCreate(PSignalingClientInfoInternal pClientInfo, PChannelInfo pC
     CHK(NULL != (pSignalingClient = (PSignalingClient) MEMCALLOC(1, SIZEOF(SignalingClient))), STATUS_NOT_ENOUGH_MEMORY);
 
     // Initialize the listener and restarter thread trackers
-    CHK_STATUS(signalingInitThreadTracker(&pSignalingClient->listenerTracker));
-    CHK_STATUS(signalingInitThreadTracker(&pSignalingClient->reconnecterTracker));
 
     // Validate and store the input
 
@@ -44,6 +43,7 @@ STATUS signalingCreate(PSignalingClientInfoInternal pClientInfo, PChannelInfo pC
     pSignalingClient->deleteTime = INVALID_TIMESTAMP_VALUE;
     pSignalingClient->connectTime = INVALID_TIMESTAMP_VALUE;
 
+    // load the previous cached information of endpoint.
     if (pSignalingClient->pChannelInfo->cachingPolicy == SIGNALING_API_CALL_CACHE_TYPE_FILE) {
         // Signaling channel name can be NULL in case of pre-created channels in which case we use ARN as the name
         if (STATUS_FAILED(signalingCacheLoadFromFile(pChannelInfo->pChannelName != NULL ? pChannelInfo->pChannelName : pChannelInfo->pChannelArn,
@@ -75,32 +75,10 @@ STATUS signalingCreate(PSignalingClientInfoInternal pClientInfo, PChannelInfo pC
                                   CUSTOM_DATA_FROM_SIGNALING_CLIENT(pSignalingClient), signalingGetCurrentTime,
                                   CUSTOM_DATA_FROM_SIGNALING_CLIENT(pSignalingClient), &pSignalingClient->pStateMachine));
 
-    // Prepare the signaling channel protocols array
-    pSignalingClient->signalingProtocols[PROTOCOL_INDEX_HTTPS].name = HTTPS_SCHEME_NAME;
-    pSignalingClient->signalingProtocols[PROTOCOL_INDEX_HTTPS].callback = (lws_callback_function*) lwsHttpCallbackRoutine;
-    pSignalingClient->signalingProtocols[PROTOCOL_INDEX_WSS].name = WSS_SCHEME_NAME;
-    pSignalingClient->signalingProtocols[PROTOCOL_INDEX_WSS].callback = (lws_callback_function*) lwsWssCallbackRoutine;
-
-    MEMSET(&creationInfo, 0x00, SIZEOF(struct lws_context_creation_info));
-    creationInfo.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-    creationInfo.port = CONTEXT_PORT_NO_LISTEN;
-    creationInfo.protocols = pSignalingClient->signalingProtocols;
-    creationInfo.timeout_secs = SIGNALING_SERVICE_API_CALL_TIMEOUT_IN_SECONDS;
-    creationInfo.gid = -1;
-    creationInfo.uid = -1;
-    creationInfo.client_ssl_ca_filepath = pChannelInfo->pCertPath;
-    creationInfo.client_ssl_cipher_list = "HIGH:!PSK:!RSP:!eNULL:!aNULL:!RC4:!MD5:!DES:!3DES:!aDH:!kDH:!DSS";
-    creationInfo.ka_time = SIGNALING_SERVICE_TCP_KEEPALIVE_IN_SECONDS;
-    creationInfo.ka_probes = SIGNALING_SERVICE_TCP_KEEPALIVE_PROBE_COUNT;
-    creationInfo.ka_interval = SIGNALING_SERVICE_TCP_KEEPALIVE_PROBE_INTERVAL_IN_SECONDS;
-/** the new interface of libwebsocket does not have this, so i removed it first.*/
-#ifndef KVS_PLAT_ESP_FREERTOS
-    creationInfo.ws_ping_pong_interval = SIGNALING_SERVICE_WSS_PING_PONG_INTERVAL_IN_SECONDS;
-#endif
-
-    CHK(NULL != (pSignalingClient->pLwsContext = lws_create_context(&creationInfo)), STATUS_SIGNALING_LWS_CREATE_CONTEXT_FAILED);
-
-    ATOMIC_STORE_BOOL(&pSignalingClient->clientReady, FALSE);
+    // Prepare the signaling channel protocols array for lws
+    // for the https connection.
+    // for the websocket connection.
+    // original design initilizes the lws context here. #TBD.
     ATOMIC_STORE_BOOL(&pSignalingClient->shutdown, FALSE);
     ATOMIC_STORE_BOOL(&pSignalingClient->connected, FALSE);
     ATOMIC_STORE_BOOL(&pSignalingClient->deleting, FALSE);
@@ -110,37 +88,11 @@ STATUS signalingCreate(PSignalingClientInfoInternal pClientInfo, PChannelInfo pC
     // Add to the signal handler
     // signal(SIGINT, lwsSignalHandler);
 
-    // Create the sync primitives
-    pSignalingClient->connectedCvar = CVAR_CREATE();
-    CHK(IS_VALID_CVAR_VALUE(pSignalingClient->connectedCvar), STATUS_INVALID_OPERATION);
-    pSignalingClient->connectedLock = MUTEX_CREATE(FALSE);
-    CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->connectedLock), STATUS_INVALID_OPERATION);
-    pSignalingClient->sendCvar = CVAR_CREATE();
-    CHK(IS_VALID_CVAR_VALUE(pSignalingClient->sendCvar), STATUS_INVALID_OPERATION);
-    pSignalingClient->sendLock = MUTEX_CREATE(FALSE);
-    CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->sendLock), STATUS_INVALID_OPERATION);
-    pSignalingClient->receiveCvar = CVAR_CREATE();
-    CHK(IS_VALID_CVAR_VALUE(pSignalingClient->receiveCvar), STATUS_INVALID_OPERATION);
-    pSignalingClient->receiveLock = MUTEX_CREATE(FALSE);
-    CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->receiveLock), STATUS_INVALID_OPERATION);
-
     pSignalingClient->stateLock = MUTEX_CREATE(TRUE);
     CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->stateLock), STATUS_INVALID_OPERATION);
 
-    pSignalingClient->messageQueueLock = MUTEX_CREATE(TRUE);
-    CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->messageQueueLock), STATUS_INVALID_OPERATION);
-
-    pSignalingClient->lwsServiceLock = MUTEX_CREATE(TRUE);
-    CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->lwsServiceLock), STATUS_INVALID_OPERATION);
-
-    pSignalingClient->lwsSerializerLock = MUTEX_CREATE(TRUE);
-    CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->lwsSerializerLock), STATUS_INVALID_OPERATION);
-
     pSignalingClient->diagnosticsLock = MUTEX_CREATE(TRUE);
     CHK(IS_VALID_MUTEX_VALUE(pSignalingClient->diagnosticsLock), STATUS_INVALID_OPERATION);
-
-    // Create the ongoing message list
-    CHK_STATUS(stackQueueCreate(&pSignalingClient->pMessageQueue));
 
     // Create the timer queue for handling stale ICE configuration
     pSignalingClient->timerQueueHandle = INVALID_TIMER_QUEUE_HANDLE_VALUE;
@@ -202,66 +154,23 @@ STATUS signalingFree(PSignalingClient* ppSignalingClient)
 
     signalingTerminateOngoingOperations(pSignalingClient, TRUE);
 
-    if (pSignalingClient->pLwsContext != NULL) {
-        MUTEX_LOCK(pSignalingClient->lwsSerializerLock);
-        lws_context_destroy(pSignalingClient->pLwsContext);
-        pSignalingClient->pLwsContext = NULL;
-        MUTEX_UNLOCK(pSignalingClient->lwsSerializerLock);
+    // original design un-initilizes the lws context here. #YC_TBD.
+    if (pSignalingClient->pWssContext != NULL) {
+        wssClientClose((PVOID) pSignalingClient->pWssContext);
+        pSignalingClient->pWssContext = NULL;
     }
 
     freeStateMachine(pSignalingClient->pStateMachine);
 
     freeChannelInfo(&pSignalingClient->pChannelInfo);
 
-    stackQueueFree(pSignalingClient->pMessageQueue);
-
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->connectedLock)) {
-        MUTEX_FREE(pSignalingClient->connectedLock);
-    }
-
-    if (IS_VALID_CVAR_VALUE(pSignalingClient->connectedCvar)) {
-        CVAR_FREE(pSignalingClient->connectedCvar);
-    }
-
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->sendLock)) {
-        MUTEX_FREE(pSignalingClient->sendLock);
-    }
-
-    if (IS_VALID_CVAR_VALUE(pSignalingClient->sendCvar)) {
-        CVAR_FREE(pSignalingClient->sendCvar);
-    }
-
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->receiveLock)) {
-        MUTEX_FREE(pSignalingClient->receiveLock);
-    }
-
-    if (IS_VALID_CVAR_VALUE(pSignalingClient->receiveCvar)) {
-        CVAR_FREE(pSignalingClient->receiveCvar);
-    }
-
     if (IS_VALID_MUTEX_VALUE(pSignalingClient->stateLock)) {
         MUTEX_FREE(pSignalingClient->stateLock);
-    }
-
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->messageQueueLock)) {
-        MUTEX_FREE(pSignalingClient->messageQueueLock);
-    }
-
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->lwsServiceLock)) {
-        MUTEX_FREE(pSignalingClient->lwsServiceLock);
-    }
-
-    if (IS_VALID_MUTEX_VALUE(pSignalingClient->lwsSerializerLock)) {
-        MUTEX_FREE(pSignalingClient->lwsSerializerLock);
     }
 
     if (IS_VALID_MUTEX_VALUE(pSignalingClient->diagnosticsLock)) {
         MUTEX_FREE(pSignalingClient->diagnosticsLock);
     }
-
-    signalingUninitThreadTracker(&pSignalingClient->reconnecterTracker);
-    signalingUninitThreadTracker(&pSignalingClient->listenerTracker);
-
     MEMFREE(pSignalingClient);
 
     *ppSignalingClient = NULL;
@@ -283,11 +192,12 @@ STATUS signalingTerminateOngoingOperations(PSignalingClient pSignalingClient, BO
         timerQueueFree(&pSignalingClient->timerQueueHandle);
     }
 
-    // Terminate the listener thread if alive
-    lwsTerminateListenerLoop(pSignalingClient);
+    if (pSignalingClient->pWssContext != NULL) {
+        wssTerminateConnection(pSignalingClient, SERVICE_CALL_RESULT_OK);
+    }
 
     // Await for the reconnect thread to exit
-    signalingAwaitForThreadTermination(&pSignalingClient->reconnecterTracker, SIGNALING_CLIENT_SHUTDOWN_TIMEOUT);
+    // signalingAwaitForThreadTermination(&pSignalingClient->reconnecterTracker, SIGNALING_CLIENT_SHUTDOWN_TIMEOUT);
 
 CleanUp:
 
@@ -302,7 +212,6 @@ STATUS signalingSendMessage(PSignalingClient pSignalingClient, PSignalingMessage
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS;
     PCHAR pOfferType = NULL;
-    BOOL removeFromList = FALSE;
 
     CHK(pSignalingClient != NULL && pSignalingMessage != NULL, STATUS_NULL_ARG);
     CHK(pSignalingMessage->peerClientId != NULL && pSignalingMessage->payload != NULL, STATUS_INVALID_ARG);
@@ -323,12 +232,8 @@ STATUS signalingSendMessage(PSignalingClient pSignalingClient, PSignalingMessage
             CHK(FALSE, STATUS_INVALID_ARG);
     }
 
-    // Store the signaling message
-    CHK_STATUS(signalingStoreOngoingMessage(pSignalingClient, pSignalingMessage));
-    removeFromList = TRUE;
-
-    // Perform the call
-    CHK_STATUS(lwsSendMessage(pSignalingClient, pOfferType, pSignalingMessage->peerClientId, pSignalingMessage->payload,
+    // #TBD, #WSS.
+    CHK_STATUS(wssSendMessage(pSignalingClient, pOfferType, pSignalingMessage->peerClientId, pSignalingMessage->payload,
                               pSignalingMessage->payloadLen, pSignalingMessage->correlationId, 0));
 
     // Update the internal diagnostics only after successfully sending
@@ -337,11 +242,6 @@ STATUS signalingSendMessage(PSignalingClient pSignalingClient, PSignalingMessage
 CleanUp:
 
     CHK_LOG_ERR(retStatus);
-
-    // Remove from the list if previously added
-    if (removeFromList) {
-        signalingRemoveOngoingMessage(pSignalingClient, pSignalingMessage->correlationId);
-    }
 
     LEAVES();
     return retStatus;
@@ -602,7 +502,8 @@ STATUS signalingRefreshIceConfigurationCallback(UINT32 timerId, UINT64 scheduled
     if (ATOMIC_LOAD_BOOL(&pSignalingClient->asyncGetIceConfig)) {
         // Re-schedule in a while
         CHK_STATUS(timerQueueAddTimer(pSignalingClient->timerQueueHandle, SIGNALING_ASYNC_ICE_CONFIG_REFRESH_DELAY,
-                                      TIMER_QUEUE_SINGLE_INVOCATION_PERIOD, signalingRefreshIceConfigurationCallback, (UINT64) pSignalingClient, &newTimerId));
+                                      TIMER_QUEUE_SINGLE_INVOCATION_PERIOD, signalingRefreshIceConfigurationCallback, (UINT64) pSignalingClient,
+                                      &newTimerId));
         CHK(FALSE, retStatus);
     }
 
@@ -646,124 +547,6 @@ CleanUp:
             pSignalingClient->signalingClientCallbacks.errorReportFn(pSignalingClient->signalingClientCallbacks.customData,
                                                                      STATUS_SIGNALING_ICE_CONFIG_REFRESH_FAILED, iceRefreshErrMsg, iceRefreshErrLen);
         }
-    }
-
-    LEAVES();
-    return retStatus;
-}
-
-STATUS signalingStoreOngoingMessage(PSignalingClient pSignalingClient, PSignalingMessage pSignalingMessage)
-{
-    ENTERS();
-    STATUS retStatus = STATUS_SUCCESS;
-    BOOL locked = FALSE;
-    PSignalingMessage pExistingMessage = NULL;
-
-    CHK(pSignalingClient != NULL && pSignalingMessage != NULL, STATUS_NULL_ARG);
-    MUTEX_LOCK(pSignalingClient->messageQueueLock);
-    locked = TRUE;
-    CHK_STATUS(signalingGetOngoingMessage(pSignalingClient, pSignalingMessage->correlationId, pSignalingMessage->peerClientId, &pExistingMessage));
-    CHK(pExistingMessage == NULL, STATUS_SIGNALING_DUPLICATE_MESSAGE_BEING_SENT);
-    CHK_STATUS(stackQueueEnqueue(pSignalingClient->pMessageQueue, (UINT64) pSignalingMessage));
-
-CleanUp:
-
-    if (locked) {
-        MUTEX_UNLOCK(pSignalingClient->messageQueueLock);
-    }
-
-    LEAVES();
-    return retStatus;
-}
-
-STATUS signalingRemoveOngoingMessage(PSignalingClient pSignalingClient, PCHAR correlationId)
-{
-    ENTERS();
-    STATUS retStatus = STATUS_SUCCESS;
-    BOOL locked = FALSE;
-    PSignalingMessage pExistingMessage;
-    StackQueueIterator iterator;
-    UINT64 data;
-
-    CHK(pSignalingClient != NULL && correlationId != NULL, STATUS_NULL_ARG);
-    MUTEX_LOCK(pSignalingClient->messageQueueLock);
-    locked = TRUE;
-
-    CHK_STATUS(stackQueueGetIterator(pSignalingClient->pMessageQueue, &iterator));
-    while (IS_VALID_ITERATOR(iterator)) {
-        CHK_STATUS(stackQueueIteratorGetItem(iterator, &data));
-
-        pExistingMessage = (PSignalingMessage) data;
-        CHK(pExistingMessage != NULL, STATUS_INTERNAL_ERROR);
-
-        if ((correlationId[0] == '\0' && pExistingMessage->correlationId[0] == '\0') || 0 == STRCMP(pExistingMessage->correlationId, correlationId)) {
-            // Remove the match
-            CHK_STATUS(stackQueueRemoveItem(pSignalingClient->pMessageQueue, data));
-
-            // Early return
-            CHK(FALSE, retStatus);
-        }
-
-        CHK_STATUS(stackQueueIteratorNext(&iterator));
-    }
-
-    // Didn't find a match
-    CHK(FALSE, STATUS_NOT_FOUND);
-
-CleanUp:
-
-    if (locked) {
-        MUTEX_UNLOCK(pSignalingClient->messageQueueLock);
-    }
-
-    LEAVES();
-    return retStatus;
-}
-
-STATUS signalingGetOngoingMessage(PSignalingClient pSignalingClient, PCHAR correlationId, PCHAR peerClientId, PSignalingMessage* ppSignalingMessage)
-{
-    ENTERS();
-    STATUS retStatus = STATUS_SUCCESS;
-    BOOL locked = FALSE, checkPeerClientId = TRUE;
-    PSignalingMessage pExistingMessage = NULL;
-    StackQueueIterator iterator;
-    UINT64 data;
-
-    CHK(pSignalingClient != NULL && correlationId != NULL && ppSignalingMessage != NULL, STATUS_NULL_ARG);
-    if (peerClientId == NULL || IS_EMPTY_STRING(peerClientId)) {
-        checkPeerClientId = FALSE;
-    }
-
-    MUTEX_LOCK(pSignalingClient->messageQueueLock);
-    locked = TRUE;
-
-    CHK_STATUS(stackQueueGetIterator(pSignalingClient->pMessageQueue, &iterator));
-    while (IS_VALID_ITERATOR(iterator)) {
-        CHK_STATUS(stackQueueIteratorGetItem(iterator, &data));
-
-        pExistingMessage = (PSignalingMessage) data;
-        CHK(pExistingMessage != NULL, STATUS_INTERNAL_ERROR);
-
-        if (((correlationId[0] == '\0' && pExistingMessage->correlationId[0] == '\0') ||
-             0 == STRCMP(pExistingMessage->correlationId, correlationId)) &&
-            (!checkPeerClientId || 0 == STRCMP(pExistingMessage->peerClientId, peerClientId))) {
-            *ppSignalingMessage = pExistingMessage;
-
-            // Early return
-            CHK(FALSE, retStatus);
-        }
-
-        CHK_STATUS(stackQueueIteratorNext(&iterator));
-    }
-
-CleanUp:
-
-    if (ppSignalingMessage != NULL) {
-        *ppSignalingMessage = pExistingMessage;
-    }
-
-    if (locked) {
-        MUTEX_UNLOCK(pSignalingClient->messageQueueLock);
     }
 
     LEAVES();
@@ -818,6 +601,8 @@ STATUS signalingAwaitForThreadTermination(PThreadTracker pThreadTracker, UINT64 
     MUTEX_LOCK(pThreadTracker->lock);
     locked = TRUE;
     // Await for the termination
+    // #TBD, #thread.
+    // change the desgin and this atomic var may be removed.
     while (!ATOMIC_LOAD_BOOL(&pThreadTracker->terminated)) {
         CHK_STATUS(CVAR_WAIT(pThreadTracker->await, pThreadTracker->lock, timeout));
     }
@@ -873,7 +658,7 @@ STATUS signalingDescribeChannel(PSignalingClient pSignalingClient, UINT64 time)
             }
 
             if (STATUS_SUCCEEDED(retStatus)) {
-                retStatus = lwsDescribeChannel(pSignalingClient, time);
+                retStatus = httpApiDescribeChannel(pSignalingClient, time);
 
                 // Store the last call time on success
                 if (STATUS_SUCCEEDED(retStatus)) {
@@ -924,7 +709,7 @@ STATUS signalingCreateChannel(PSignalingClient pSignalingClient, UINT64 time)
     }
 
     if (STATUS_SUCCEEDED(retStatus)) {
-        retStatus = lwsCreateChannel(pSignalingClient, time);
+        retStatus = httpApiCreateChannl(pSignalingClient, time);
 
         // Store the time of the call on success
         if (STATUS_SUCCEEDED(retStatus)) {
@@ -987,7 +772,7 @@ STATUS signalingGetChannelEndpoint(PSignalingClient pSignalingClient, UINT64 tim
             }
 
             if (STATUS_SUCCEEDED(retStatus)) {
-                retStatus = lwsGetChannelEndpoint(pSignalingClient, time);
+                retStatus = httpApiGetChannelEndpoint(pSignalingClient, time);
 
                 if (STATUS_SUCCEEDED(retStatus)) {
                     pSignalingClient->getEndpointTime = time;
@@ -1044,7 +829,8 @@ STATUS signalingGetIceConfig(PSignalingClient pSignalingClient, UINT64 time)
     if (ATOMIC_LOAD_BOOL(&pSignalingClient->asyncGetIceConfig)) {
         // We will emulate the call and kick off the ice refresh routine
         CHK_STATUS(timerQueueAddTimer(pSignalingClient->timerQueueHandle, SIGNALING_ASYNC_ICE_CONFIG_REFRESH_DELAY,
-                                      TIMER_QUEUE_SINGLE_INVOCATION_PERIOD, signalingRefreshIceConfigurationCallback, (UINT64) pSignalingClient, &timerId));
+                                      TIMER_QUEUE_SINGLE_INVOCATION_PERIOD, signalingRefreshIceConfigurationCallback, (UINT64) pSignalingClient,
+                                      &timerId));
 
         // Success early return to prime the state machine to the next state which is Ready
         ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_OK);
@@ -1065,7 +851,7 @@ STATUS signalingGetIceConfig(PSignalingClient pSignalingClient, UINT64 time)
     }
 
     if (STATUS_SUCCEEDED(retStatus)) {
-        retStatus = lwsGetIceConfig(pSignalingClient, time);
+        retStatus = httpApiGetIceConfig(pSignalingClient, time);
 
         if (STATUS_SUCCEEDED(retStatus)) {
             pSignalingClient->getIceConfigTime = time;
@@ -1110,7 +896,7 @@ STATUS signalingDeleteChannel(PSignalingClient pSignalingClient, UINT64 time)
     }
 
     if (STATUS_SUCCEEDED(retStatus)) {
-        retStatus = lwsDeleteChannel(pSignalingClient, time);
+        retStatus = httpApiDeleteChannl(pSignalingClient, time);
 
         // Store the time of the call on success
         if (STATUS_SUCCEEDED(retStatus)) {
@@ -1159,7 +945,7 @@ STATUS signalingConnectChannel(PSignalingClient pSignalingClient, UINT64 time)
         // No need to reconnect again if already connected. This can happen if we get to this state after ice refresh
         if (!ATOMIC_LOAD_BOOL(&pSignalingClient->connected)) {
             ATOMIC_STORE(&pSignalingClient->result, (SIZE_T) SERVICE_CALL_RESULT_NOT_SET);
-            retStatus = lwsConnectSignalingChannel(pSignalingClient, time);
+            retStatus = wssConnectSignalingChannel(pSignalingClient, time);
 
             // Store the time of the call on success
             if (STATUS_SUCCEEDED(retStatus)) {

@@ -65,6 +65,13 @@ extern "C" {
         ATOMIC_INCREMENT(&(pClient)->diagnostics.numberOfErrors);                                                                                    \
     }
 
+#define SIGNALING_SDP_TYPE_OFFER       "SDP_OFFER"
+#define SIGNALING_SDP_TYPE_ANSWER      "SDP_ANSWER"
+#define SIGNALING_ICE_CANDIDATE        "ICE_CANDIDATE"
+#define SIGNALING_GO_AWAY              "GO_AWAY"
+#define SIGNALING_RECONNECT_ICE_SERVER "RECONNECT_ICE_SERVER"
+#define SIGNALING_STATUS_RESPONSE      "STATUS_RESPONSE"
+
 // Forward declaration
 typedef struct __LwsCallInfo* PLwsCallInfo;
 
@@ -72,7 +79,7 @@ typedef struct __LwsCallInfo* PLwsCallInfo;
 typedef STATUS (*SignalingApiCallHookFunc)(UINT64);
 
 /**
- * Internal client info object
+ * @brief   Internal client info object
  */
 typedef struct {
     // Public client info structure
@@ -110,7 +117,7 @@ typedef struct {
  * Thread execution tracker
  */
 typedef struct {
-    volatile ATOMIC_BOOL terminated;
+    volatile ATOMIC_BOOL terminated; //!< indicate the thread is terminated or not. true means terminated.
     TID threadId;
     MUTEX lock;
     CVAR await;
@@ -136,23 +143,18 @@ typedef struct {
  * Internal representation of the Signaling client.
  */
 typedef struct {
-    // Current service call result
-    volatile SIZE_T result;
-
-    // Sent message result
-    volatile SIZE_T messageResult;
-
-    // Client is ready to connect to signaling channel
-    volatile ATOMIC_BOOL clientReady;
+    volatile SIZE_T result; //!< Current service call result
 
     // Shutting down the entire client
-    volatile ATOMIC_BOOL shutdown;
+    volatile ATOMIC_BOOL shutdown; //!< Indicate the signaling is freed.
 
     // Wss is connected
-    volatile ATOMIC_BOOL connected;
+    volatile ATOMIC_BOOL connected; //!< Indidcate the signaling is connected or not by receiving the following lws message
+                                    //!< LWS_CALLBACK_CLIENT_ESTABLISHED
+                                    //!< LWS_CALLBACK_CLIENT_CONNECTION_ERROR
 
     // The channel is being deleted
-    volatile ATOMIC_BOOL deleting;
+    volatile ATOMIC_BOOL deleting; //!< Indicate the signaling is deleting.
 
     // The channel is deleted
     volatile ATOMIC_BOOL deleted;
@@ -187,8 +189,11 @@ typedef struct {
     PChannelInfo pChannelInfo;
 
     // Returned signaling channel description
-    SignalingChannelDescription channelDescription;
+    SignalingChannelDescription channelDescription; //!< the information from calling the api of describing the channel.
 
+    /**
+     * https://docs.aws.amazon.com/kinesisvideostreams/latest/dg/API_ResourceEndpointListItem.html
+     */
     // Signaling endpoint
     CHAR channelEndpointWss[MAX_SIGNALING_ENDPOINT_URI_LEN + 1];
 
@@ -207,74 +212,30 @@ typedef struct {
     // Current AWS credentials
     PAwsCredentials pAwsCredentials;
 
-    // Service call context
-    ServiceCallContext serviceCallContext;
-
     // Indicates whether to self-prime on Ready or not
-    BOOL continueOnReady;
+    BOOL continueOnReady; //!< Indicate connect to signaling channel or not.
 
     // Interlocking the state transitions
     MUTEX stateLock;
 
-    // Sync mutex for connected condition variable
-    MUTEX connectedLock;
-
-    // Conditional variable for Connected state
-    CVAR connectedCvar;
-
-    // Sync mutex for sending condition variable
-    MUTEX sendLock;
-
-    // Conditional variable for sending interlock
-    CVAR sendCvar;
-
-    // Sync mutex for receiving response to the message condition variable
-    MUTEX receiveLock;
-
-    // Conditional variable for receiving response to the sent message
-    CVAR receiveCvar;
-
     // Execute the state machine until this time
     UINT64 stepUntil;
 
-    // Ongoing listener call info
-    PLwsCallInfo pOngoingCallInfo;
-
-    // Listener thread for the socket
-    ThreadTracker listenerTracker;
-
-    // Restarted thread handler
-    ThreadTracker reconnecterTracker;
-
     // LWS context to use for Restful API
-    struct lws_context* pLwsContext;
-
-    // Signaling protocols
-    struct lws_protocols signalingProtocols[3];
-
-    // List of the ongoing messages
-    PStackQueue pMessageQueue;
-
-    // Message queue lock
-    MUTEX messageQueueLock;
-
-    // LWS needs to be locked
-    MUTEX lwsServiceLock;
-
-    // Serialized access to LWS service call
-    MUTEX lwsSerializerLock;
+    // this context belongs to wss client.
+    PVOID pWssContext;
 
     // Re-entrant lock for diagnostics/stats
     MUTEX diagnosticsLock;
 
     // Timer queue to handle stale ICE configuration
-    TIMER_QUEUE_HANDLE timerQueueHandle;
+    TIMER_QUEUE_HANDLE timerQueueHandle; //!< right now, only be used in getting ice configuration.
 
     // Internal diagnostics object
     SignalingDiagnostics diagnostics;
 
     // Tracking when was the Last time the APIs were called
-    UINT64 describeTime;
+    UINT64 describeTime; //!< the time of describing the channel.
     UINT64 createTime;
     UINT64 getEndpointTime;
     UINT64 getIceConfigTime;
@@ -285,6 +246,16 @@ typedef struct {
 // Public handle to and from object converters
 #define TO_SIGNALING_CLIENT_HANDLE(p)   ((SIGNALING_CLIENT_HANDLE)(p))
 #define FROM_SIGNALING_CLIENT_HANDLE(h) (IS_VALID_SIGNALING_CLIENT_HANDLE(h) ? (PSignalingClient)(h) : NULL)
+
+typedef STATUS (*httpApi)(PSignalingClient, UINT64);
+// Check for the stale credentials
+#define CHECK_SIGNALING_CREDENTIALS_EXPIRATION(p)                                                                                                    \
+    do {                                                                                                                                             \
+        if (GETTIME() >= (p)->pAwsCredentials->expiration) {                                                                                         \
+            ATOMIC_STORE(&(p)->result, (SIZE_T) SERVICE_CALL_NOT_AUTHORIZED);                                                                        \
+            CHK(FALSE, retStatus);                                                                                                                   \
+        }                                                                                                                                            \
+    } while (FALSE)
 
 STATUS signalingCreate(PSignalingClientInfoInternal, PChannelInfo, PSignalingClientCallbacks, PAwsCredentialProvider, PSignalingClient*);
 STATUS signalingFree(PSignalingClient*);
@@ -300,14 +271,9 @@ STATUS signalingValidateCallbacks(PSignalingClient, PSignalingClientCallbacks);
 STATUS signalingValidateClientInfo(PSignalingClient, PSignalingClientInfoInternal);
 STATUS signalingValidateIceConfiguration(PSignalingClient);
 
-STATUS signalingStoreOngoingMessage(PSignalingClient, PSignalingMessage);
-STATUS signalingRemoveOngoingMessage(PSignalingClient, PCHAR);
-STATUS signalingGetOngoingMessage(PSignalingClient, PCHAR, PCHAR, PSignalingMessage*);
-
 STATUS signalingRefreshIceConfigurationCallback(UINT32, UINT64, UINT64);
-
 UINT64 signalingGetCurrentTime(UINT64);
-
+// thread related.
 STATUS signalingAwaitForThreadTermination(PThreadTracker, UINT64);
 STATUS signalingInitThreadTracker(PThreadTracker);
 STATUS signalingUninitThreadTracker(PThreadTracker);

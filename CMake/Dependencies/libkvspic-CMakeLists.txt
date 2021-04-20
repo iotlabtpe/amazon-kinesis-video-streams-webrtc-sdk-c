@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 2.8)
+
+project(libkvspic-download NONE)
+
+include(ExternalProject)
+
+# clone repo only
+ExternalProject_Add(libkvspic-download
+	GIT_REPOSITORY    git@github.com:ycyang1229/amazon-kinesis-video-streams-pic.git
+  GIT_TAG           webrtc-on-freertos
+  PREFIX            ${CMAKE_CURRENT_BINARY_DIR}/build
+	CMAKE_ARGS
+	  -DCMAKE_INSTALL_PREFIX=${OPEN_SRC_INSTALL_PREFIX}
+    -DOPEN_SRC_INSTALL_PREFIX=${OPEN_SRC_INSTALL_PREFIX}
+    -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+  BUILD_ALWAYS      TRUE
+	TEST_COMMAND      ""
+)

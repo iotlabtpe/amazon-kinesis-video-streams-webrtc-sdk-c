@@ -1,0 +1,24 @@
+cmake_minimum_required(VERSION 2.8)
+
+project(libkvsCommon-download NONE)
+
+include(ExternalProject)
+
+ExternalProject_Add(libkvsCommon-download
+    GIT_REPOSITORY    https://github.com/ycyang1229/amazon-kinesis-video-streams-producer-c.git
+    GIT_TAG           e2e951dfa6445543af81c60c9a344684e5b6abaa
+    PREFIX            ${CMAKE_CURRENT_BINARY_DIR}/build
+    CMAKE_ARGS        
+      -DCMAKE_INSTALL_PREFIX=${OPEN_SRC_INSTALL_PREFIX}
+      -DBUILD_COMMON=ON
+      -DBUILD_COMMON_LWS=OFF
+      -DBUILD_COMMON_CURL=OFF
+      -DBUILD_DEPENDENCIES=FALSE
+      -DOPEN_SRC_INSTALL_PREFIX=${OPEN_SRC_INSTALL_PREFIX}
+      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+      -DUSE_OPENSSL=${USE_OPENSSL}
+      -DUSE_MBEDTLS=${USE_MBEDTLS}
+      -DBUILD_KVSPIC=OFF
+    BUILD_ALWAYS      TRUE
+    TEST_COMMAND      ""
+)

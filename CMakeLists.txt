@@ -117,11 +117,14 @@ if(BUILD_DEPENDENCIES)
     build_dependency(mbedtls ${BUILD_ARGS})
   endif()
 
+  build_dependency(llhttp ${BUILD_ARGS})
+  build_dependency(wslay)
+
   set(BUILD_ARGS -DBUILD_STATIC_LIBS=${BUILD_STATIC_LIBS}
                  -DOPENSSL_DIR=${OPEN_SRC_INSTALL_PREFIX}
                  -DUSE_OPENSSL=${USE_OPENSSL}
                  -DUSE_MBEDTLS=${USE_MBEDTLS})
-  build_dependency(websockets ${BUILD_ARGS})
+
   if(ENABLE_STREAMING)
     set(BUILD_ARGS
         -DBUILD_STATIC_LIBS=${BUILD_STATIC_LIBS}
@@ -146,7 +149,8 @@ if(BUILD_DEPENDENCIES)
       -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
       -DUSE_OPENSSL=${USE_OPENSSL}
       -DUSE_MBEDTLS=${USE_MBEDTLS})
-  build_dependency(kvsCommonLws ${BUILD_ARGS})
+  build_dependency(kvspic ${BUILD_ARGS})
+  build_dependency(kvsCommon ${BUILD_ARGS})
 
   message(STATUS "Finished building dependencies.")
 endif()
@@ -167,20 +171,27 @@ endif()
 
 if (ENABLE_STREAMING AND NOT KVS_PLAT_ESP_FREERTOS)
   if (OPEN_SRC_INSTALL_PREFIX)
+    find_library(LLHTTP_LIBRARIES llhttp REQUIRED PATHS ${OPEN_SRC_INSTALL_PREFIX})
+  else()
+    find_library(LLHTTP_LIBRARIES llhttp REQUIRED )
+  endif()
+endif()
+
+if (ENABLE_STREAMING AND NOT KVS_PLAT_ESP_FREERTOS)
+  if (OPEN_SRC_INSTALL_PREFIX)
+    find_library(WSLAY_LIBRARIES wslay REQUIRED PATHS ${OPEN_SRC_INSTALL_PREFIX})
+  else()
+    find_library(WSLAY_LIBRARIES wslay REQUIRED )
+  endif()
+endif()
+
+if (ENABLE_STREAMING AND NOT KVS_PLAT_ESP_FREERTOS)
+  if (OPEN_SRC_INSTALL_PREFIX)
     find_library(SRTP_LIBRARIES srtp2 REQUIRED PATHS ${OPEN_SRC_INSTALL_PREFIX})
   else()
     find_library(SRTP_LIBRARIES srtp2 REQUIRED )
   endif()
 endif()
-
-if (WIN32)
-  SET(LIBWEBSOCKETS_LIBRARIES "websockets.lib")
-else()
-  if(NOT KVS_PLAT_ESP_FREERTOS)
-    pkg_check_modules(LIBWEBSOCKETS REQUIRED libwebsockets)
-  endif()
-endif()
-
 
 if(ENABLE_DATA_CHANNEL)
   # usrsctp dont support pkgconfig yet
@@ -191,10 +202,9 @@ if(ENABLE_DATA_CHANNEL)
 endif()
 
 set(OPEN_SRC_INCLUDE_DIRS ${OPEN_SRC_INCLUDE_DIRS} ${LIBSRTP_INCLUDE_DIRS}
-                          ${CURL_INCLUDE_DIRS} ${LIBWEBSOCKETS_INCLUDE_DIRS})
+                          ${CURL_INCLUDE_DIRS})
 
 link_directories(${LIBSRTP_LIBRARY_DIRS})
-link_directories(${LIBWEBSOCKETS_LIBRARY_DIRS})
 link_directories(${OPEN_SRC_INSTALL_PREFIX}/lib)
 
 pkg_check_modules(GST gstreamer-1.0)
@@ -337,15 +347,17 @@ target_compile_options(kvsWebrtcSignalingClient PUBLIC -Wno-format-truncation)
 target_link_libraries(
   kvsWebrtcSignalingClient
   PUBLIC
-        ${LIBWEBSOCKETS_LIBRARIES} 
-        kvsCommonLws
+        kvsCommon
   PRIVATE kvspicUtils
          kvspicState
          ${CMAKE_THREAD_LIBS_INIT}
          ${EXTRA_DEPS}
          ${OPENSSL_SSL_LIBRARY}
          ${OPENSSL_CRYPTO_LIBRARY}
-         ${MBEDTLS_LIBRARIES})
+         ${MBEDTLS_LIBRARIES}
+         ${LLHTTP_LIBRARIES}
+         ${PARSON_LIBRARIES}
+         ${WSLAY_LIBRARIES})
 
 if (WIN32)
   target_link_libraries(kvsWebrtcClient PRIVATE "Ws2_32" "iphlpapi")

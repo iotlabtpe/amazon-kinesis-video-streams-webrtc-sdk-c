@@ -41,7 +41,17 @@ extern "C" {
 #include <mbedtls/error.h>
 #include <mbedtls/certs.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/md5.h>
+#include <mbedtls/net.h>
+#include <mbedtls/base64.h>
+#include <mbedtls/sha1.h>
+#include <mbedtls/debug.h>
 #endif
+
+#include <llhttp.h>
+#include <wslay/wslay.h>
+#include <errno.h>
+#include <pthread.h>
 
 #ifdef ENABLE_STREAMING
 #ifdef KVS_PLAT_ESP_FREERTOS
@@ -58,7 +68,6 @@ extern "C" {
 #ifdef ENABLE_DATA_CHANNEL
 #include <usrsctp.h>
 #endif
-#include <libwebsockets.h>
 
 #if !defined __WINDOWS_BUILD__
 #include <signal.h>
@@ -163,11 +172,16 @@ STATUS generateJSONSafeString(PCHAR, UINT32);
 #include "Rtp/Codecs/RtpOpusPayloader.h"
 #include "Rtp/Codecs/RtpG711Payloader.h"
 #endif
+#include "Signaling/list.h"
+#include "Signaling/NetworkApi.h"
+#include "Signaling/HttpHelper.h"
 #include "Signaling/FileCache.h"
-#include "Signaling/Signaling.h"
 #include "Signaling/ChannelInfo.h"
+#include "Signaling/Signaling.h"
+#include "Signaling/HttpApi.h"
+#include "Signaling/WssApi.h"
+#include "Signaling/WssClient.h"
 #include "Signaling/StateMachine.h"
-#include "Signaling/LwsApiCalls.h"
 #include "Metrics/Metrics.h"
 
 ////////////////////////////////////////////////////

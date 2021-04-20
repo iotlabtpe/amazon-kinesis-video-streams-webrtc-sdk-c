@@ -82,6 +82,7 @@ STATUS createValidateChannelInfo(PChannelInfo pOrigChannelInfo, PChannelInfo* pp
         ALIGN_UP_TO_MACHINE_WORD(1 + regionLen) + ALIGN_UP_TO_MACHINE_WORD(1 + cplLen) + ALIGN_UP_TO_MACHINE_WORD(1 + certLen) +
         ALIGN_UP_TO_MACHINE_WORD(1 + postfixLen) + ALIGN_UP_TO_MACHINE_WORD(1 + agentLen) + ALIGN_UP_TO_MACHINE_WORD(1 + userAgentLen) +
         ALIGN_UP_TO_MACHINE_WORD(1 + kmsLen) + tagsSize;
+    // #heap.
     CHK(NULL != (pChannelInfo = (PChannelInfo) MEMCALLOC(1, allocSize)), STATUS_NOT_ENOUGH_MEMORY);
 
     pChannelInfo->version = CHANNEL_INFO_CURRENT_VERSION;
@@ -102,7 +103,7 @@ STATUS createValidateChannelInfo(PChannelInfo pOrigChannelInfo, PChannelInfo* pp
         pChannelInfo->asyncIceServerConfig = FALSE;
     }
 
-    // Set the current pointer to the end
+    // set the current pointer to internal structure.
     pCurPtr = (PCHAR)(pChannelInfo + 1);
 
     // Set the pointers to the end and copy the data.
